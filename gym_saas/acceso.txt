@@ -1,0 +1,8 @@
+🧑‍💻 USUARIOS DE PRUEBA CREADOS
+Tipo de Usuario	Usuario / Email	Contraseña	Descripción
+🧑‍💼 SuperAdmin	admin@sistema.com
+	admin123	Accede al panel /superadmin/
+🏋️‍♂️ Gimnasio	fitzone@gym.com
+	gym123	Accede a /gimnasios/
+🙋‍♂️ Socio	juanperez@mail.com
+	socio123	Accede a /socios/
