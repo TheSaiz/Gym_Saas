@@ -14,6 +14,14 @@ if (!isset($_SESSION['regenerated'])) {
 
 include_once(__DIR__ . "/../includes/db_connect.php");
 
+// Cargar SDK de MercadoPago
+require_once(__DIR__ . "/../vendor/autoload.php");
+
+// Importar clases necesarias
+use MercadoPago\MercadoPagoConfig;
+use MercadoPago\Client\Preference\PreferenceClient;
+use MercadoPago\Exceptions\MPApiException;
+
 $base_url = "/gym_saas";
 
 // Verificar sesión con seguridad mejorada
@@ -115,65 +123,64 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && $mp_configurado){
                     $pago_id = $conn->insert_id;
                     $stmt->close();
                     
-                    // Integración con MercadoPago
-                    require_once(__DIR__ . "/../vendor/autoload.php");
-                    
                     try {
-                        MercadoPago\SDK::setAccessToken($mp_access_token);
-                        
-                        $preference = new MercadoPago\Preference();
-                        
-                        // Item
-                        $item = new MercadoPago\Item();
-                        $item->title = "Licencia: " . $licencia['nombre'];
-                        $item->description = "Licencia de " . $licencia['dias'] . " días para " . $gimnasio_nombre;
-                        $item->quantity = 1;
-                        $item->unit_price = floatval($licencia['precio']);
-                        
-                        $preference->items = array($item);
+                        // Configurar MercadoPago con el nuevo SDK
+                        MercadoPagoConfig::setAccessToken($mp_access_token);
                         
                         // URLs de retorno
                         $site_url = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://" . $_SERVER['HTTP_HOST'];
                         
-                        $preference->back_urls = array(
-                            "success" => $site_url . $base_url . "/gimnasios/checkout.php?status=success&payment_id=" . $pago_id,
-                            "failure" => $site_url . $base_url . "/gimnasios/checkout.php?status=failure&payment_id=" . $pago_id,
-                            "pending" => $site_url . $base_url . "/gimnasios/checkout.php?status=pending&payment_id=" . $pago_id
-                        );
+                        // Crear preferencia
+                        $preference_data = [
+                            "items" => [
+                                [
+                                    "id" => "LIC-" . $licencia_id,
+                                    "title" => "Licencia: " . $licencia['nombre'],
+                                    "description" => "Licencia de " . $licencia['dias'] . " días para " . $gimnasio_nombre,
+                                    "quantity" => 1,
+                                    "currency_id" => "ARS",
+                                    "unit_price" => (float)$licencia['precio']
+                                ]
+                            ],
+                            "back_urls" => [
+                                "success" => $site_url . $base_url . "/gimnasios/checkout.php?status=success&payment_id=" . $pago_id,
+                                "failure" => $site_url . $base_url . "/gimnasios/checkout.php?status=failure&payment_id=" . $pago_id,
+                                "pending" => $site_url . $base_url . "/gimnasios/checkout.php?status=pending&payment_id=" . $pago_id
+                            ],
+                            "auto_return" => "approved",
+                            "external_reference" => "GYM-" . $gimnasio_id . "-" . $pago_id,
+                            "payer" => [
+                                "email" => "gimnasio" . $gimnasio_id . "@sistema.com"
+                            ],
+                            "notification_url" => $site_url . $base_url . "/gimnasios/notificar_pago.php",
+                            "statement_descriptor" => "GIMNASIO-" . strtoupper(substr($gimnasio_nombre, 0, 10))
+                        ];
                         
-                        $preference->auto_return = "approved";
+                        // Crear cliente de preferencias
+                        $client = new PreferenceClient();
+                        $preference = $client->create($preference_data);
                         
-                        // Metadata para identificar el pago
-                        $preference->external_reference = "GYM-" . $gimnasio_id . "-" . $pago_id;
+                        // Actualizar pago con ID de MercadoPago
+                        $stmt = $conn->prepare("UPDATE pagos SET mp_id = ? WHERE id = ?");
+                        $mp_preference_id = $preference->id;
+                        $stmt->bind_param("si", $mp_preference_id, $pago_id);
+                        $stmt->execute();
+                        $stmt->close();
                         
-                        // Datos del pagador
-                        $payer = new MercadoPago\Payer();
-                        $payer->email = "gimnasio" . $gimnasio_id . "@sistema.com";
-                        $preference->payer = $payer;
+                        // Redireccionar a MercadoPago
+                        header("Location: " . $preference->init_point);
+                        exit;
                         
-                        // Guardar preferencia
-                        if($preference->save()){
-                            // Actualizar pago con ID de MercadoPago
-                            $stmt = $conn->prepare("UPDATE pagos SET mp_id = ? WHERE id = ?");
-                            $mp_preference_id = $preference->id;
-                            $stmt->bind_param("si", $mp_preference_id, $pago_id);
-                            $stmt->execute();
-                            $stmt->close();
-                            
-                            // Redireccionar a MercadoPago
-                            header("Location: " . $preference->init_point);
-                            exit;
-                        } else {
-                            $mensaje = "Error al crear la preferencia de pago. Intenta nuevamente.";
-                            $mensaje_tipo = "danger";
-                        }
-                        
-                    } catch(Exception $e) {
+                    } catch (MPApiException $e) {
+                        $mensaje = "Error de MercadoPago: " . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
+                        $mensaje_tipo = "danger";
+                        error_log("Error MPApiException: " . $e->getMessage());
+                        error_log("Status code: " . $e->getApiResponse()->getStatusCode());
+                        error_log("Content: " . json_encode($e->getApiResponse()->getContent()));
+                    } catch (Exception $e) {
                         $mensaje = "Error al procesar el pago: " . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
                         $mensaje_tipo = "danger";
-                        
-                        // Registrar error en log (opcional)
-                        error_log("Error MercadoPago: " . $e->getMessage());
+                        error_log("Error Exception: " . $e->getMessage());
                     }
                     
                 } else {
@@ -185,7 +192,7 @@ if($_SERVER['REQUEST_METHOD'] === 'POST' && $mp_configurado){
             } else {
                 $mensaje = "Licencia no encontrada o inactiva.";
                 $mensaje_tipo = "danger";
-                $stmt->close();
+                if($result) $stmt->close();
             }
         }
     }
