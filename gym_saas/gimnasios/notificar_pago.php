@@ -2,9 +2,6 @@
 /**
  * Webhook de MercadoPago
  * Recibe notificaciones de pagos y actualiza el estado en la base de datos
- * 
- * IMPORTANTE: Este archivo NO debe tener sesiones ni redirecciones
- * Es llamado directamente por MercadoPago
  */
 
 // Headers de seguridad
@@ -14,7 +11,14 @@ header('X-Content-Type-Options: nosniff');
 // Incluir conexión a base de datos
 include_once(__DIR__ . "/../includes/db_connect.php");
 
-// Log de la solicitud (útil para debugging)
+// Cargar SDK de MercadoPago
+require_once(__DIR__ . "/../vendor/autoload.php");
+
+use MercadoPago\MercadoPagoConfig;
+use MercadoPago\Client\Payment\PaymentClient;
+use MercadoPago\Exceptions\MPApiException;
+
+// Log de la solicitud
 $log_file = __DIR__ . "/../logs/mp_webhook.log";
 $log_dir = dirname($log_file);
 
@@ -125,9 +129,6 @@ try {
     
     logWebhook("Pago encontrado", $pago);
     
-    // Obtener información del pago desde MercadoPago (opcional pero recomendado)
-    require_once(__DIR__ . "/../vendor/autoload.php");
-    
     // Obtener token de acceso del gimnasio
     $stmt = $conn->prepare("SELECT mp_token FROM gimnasios WHERE id = ? LIMIT 1");
     $stmt->bind_param("i", $pago['gimnasio_id']);
@@ -139,14 +140,17 @@ try {
         $mp_access_token = $gimnasio['mp_token'];
         $stmt->close();
         
-        // Configurar SDK de MercadoPago
-        MercadoPago\SDK::setAccessToken($mp_access_token);
+        // Configurar MercadoPago
+        MercadoPagoConfig::setAccessToken($mp_access_token);
         
-        // Obtener información del pago
-        $payment = MercadoPago\Payment::find_by_id($payment_id);
+        // Crear cliente de pagos
+        $client = new PaymentClient();
         
-        if($payment){
-            $status = $payment->status; // approved, pending, rejected, cancelled, etc.
+        try {
+            // Obtener información del pago
+            $payment = $client->get($payment_id);
+            
+            $status = $payment->status;
             
             logWebhook("Estado del pago en MercadoPago: $status");
             
@@ -188,10 +192,7 @@ try {
                         $parts = explode('-', $external_ref);
                         
                         if(count($parts) === 3){
-                            // Buscar la licencia en la tabla pagos o usar una lógica específica
-                            // Por ahora, extendemos 30 días como ejemplo
-                            // TODO: Mejorar esto para obtener los días exactos de la licencia comprada
-                            
+                            // Extender 30 días (TODO: obtener días exactos de la licencia)
                             $stmt = $conn->prepare("UPDATE gimnasios 
                                                    SET fecha_inicio = CURDATE(), 
                                                        fecha_fin = DATE_ADD(CURDATE(), INTERVAL 30 DAY),
@@ -213,7 +214,6 @@ try {
                 // Si es una membresía de socio, actualizar la licencia del socio
                 if($estado_sistema === 'pagado' && $pago['tipo'] === 'membresia_socio' && !empty($pago['usuario_id'])){
                     
-                    // Obtener datos de la membresía desde usuario_id (que sería el socio_id)
                     $stmt = $conn->prepare("UPDATE licencias_socios 
                                            SET estado = 'activa',
                                                fecha_inicio = CURDATE(),
@@ -253,13 +253,14 @@ try {
                 ]);
             }
             
-        } else {
-            logWebhook("No se pudo obtener información del pago desde MercadoPago");
+        } catch (MPApiException $e) {
+            logWebhook("Error MPApiException: " . $e->getMessage());
             
-            http_response_code(404);
+            http_response_code(500);
             echo json_encode([
                 'success' => false,
-                'error' => 'No se pudo obtener información del pago'
+                'error' => 'Error al consultar MercadoPago',
+                'message' => $e->getMessage()
             ]);
         }
         
@@ -275,7 +276,7 @@ try {
     }
     
 } catch(Exception $e) {
-    logWebhook("Error en el procesamiento: " . $e->getMessage());
+    logWebhook("Error general: " . $e->getMessage());
     
     http_response_code(500);
     echo json_encode([
