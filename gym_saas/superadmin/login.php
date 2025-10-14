@@ -19,6 +19,20 @@ $error_message = '';
 $success_message = '';
 
 // ============================================
+// CREAR TABLA DE INTENTOS SI NO EXISTE
+// ============================================
+
+$conn->query("CREATE TABLE IF NOT EXISTS login_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45),
+    username VARCHAR(100),
+    success TINYINT(1),
+    attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX(ip_address),
+    INDEX(attempt_time)
+)");
+
+// ============================================
 // MANEJO DE INTENTOS DE LOGIN
 // ============================================
 
@@ -40,17 +54,6 @@ function getLoginAttempts($conn, $ip) {
 }
 
 function recordLoginAttempt($conn, $ip, $username, $success) {
-    // Crear tabla si no existe
-    $conn->query("CREATE TABLE IF NOT EXISTS login_attempts (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        ip_address VARCHAR(45),
-        username VARCHAR(100),
-        success TINYINT(1),
-        attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX(ip_address),
-        INDEX(attempt_time)
-    )");
-    
     $stmt = $conn->prepare("INSERT INTO login_attempts (ip_address, username, success) VALUES (?, ?, ?)");
     $success_int = $success ? 1 : 0;
     $stmt->bind_param("ssi", $ip, $username, $success_int);
@@ -125,7 +128,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         
                         recordLoginAttempt($conn, $ip_address, $usuario, true);
                         
-                        // Actualizar última conexión
+                        // Actualizar última conexión (agregar campo si no existe)
+                        $conn->query("ALTER TABLE superadmin ADD COLUMN IF NOT EXISTS ultimo_acceso TIMESTAMP NULL");
                         $stmt_update = $conn->prepare("UPDATE superadmin SET ultimo_acceso = NOW() WHERE id = ?");
                         $stmt_update->bind_param("i", $admin['id']);
                         $stmt_update->execute();
