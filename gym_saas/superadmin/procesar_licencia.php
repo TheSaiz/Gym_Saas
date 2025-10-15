@@ -1,114 +1,208 @@
 <?php
-include_once(__DIR__ . "/../includes/auth_check.php");
-checkSuperAdminLogin();
-include_once("../includes/db_connect.php"); // conexión DB
+session_start();
 
-$id = $_GET['id'] ?? 0;
-$id = (int)$id;
-
-if($id <= 0){
-    header("Location: gimnasios.php?msg=ID de gimnasio inválido");
+if (!isset($_SESSION['superadmin_id'])) {
+    header('Location: /gym_saas/superadmin/login.php');
     exit;
 }
 
-// Obtener datos del gimnasio
-$result = $conn->query("SELECT * FROM gimnasios WHERE id='$id'");
-if($result->num_rows == 0){
-    header("Location: gimnasios.php?msg=Gimnasio no encontrado");
-    exit;
+require_once __DIR__ . '/../includes/db_connect.php';
+
+// Función para sanitizar entrada
+function sanitize_input($data) {
+    return htmlspecialchars(trim(stripslashes($data)), ENT_QUOTES, 'UTF-8');
 }
-$gym = $result->fetch_assoc();
 
-// Manejo del POST
-$success = '';
-if($_SERVER['REQUEST_METHOD'] === 'POST'){
-    $nombre    = $conn->real_escape_string($_POST['nombre']);
-    $direccion = $conn->real_escape_string($_POST['direccion']);
-    $altura    = $conn->real_escape_string($_POST['altura']);
-    $localidad = $conn->real_escape_string($_POST['localidad']);
-    $partido   = $conn->real_escape_string($_POST['partido']);
-    $email     = $conn->real_escape_string($_POST['email']);
-    $estado    = $_POST['estado'] ?? 'activo';
+// Validar y sanitizar datos
+function validate_licencia_data($nombre, $precio, $dias) {
+    $errors = [];
 
-    // Actualizar datos
-    $update = $conn->query("
-        UPDATE gimnasios SET 
-            nombre='$nombre',
-            direccion='$direccion',
-            altura='$altura',
-            localidad='$localidad',
-            partido='$partido',
-            email='$email',
-            estado='$estado'
-        WHERE id='$id'
-    ");
-
-    if($update){
-        $success = "Gimnasio actualizado correctamente.";
-        // refrescar datos
-        $result = $conn->query("SELECT * FROM gimnasios WHERE id='$id'");
-        $gym = $result->fetch_assoc();
-    } else {
-        $success = "Error al actualizar gimnasio: " . $conn->error;
+    if (empty($nombre)) {
+        $errors[] = "El nombre es obligatorio";
     }
+
+    if (!is_numeric($precio) || $precio < 0) {
+        $errors[] = "El precio debe ser un número válido";
+    }
+
+    if (!is_numeric($dias) || $dias <= 0) {
+        $errors[] = "Los días deben ser un número positivo";
+    }
+
+    return $errors;
 }
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    switch ($action) {
+        case 'crear':
+            $nombre = sanitize_input($_POST['nombre']);
+            $precio = floatval($_POST['precio']);
+            $dias = intval($_POST['dias']);
+            $estado = in_array($_POST['estado'] ?? 'activo', ['activo', 'inactivo']) ? $_POST['estado'] : 'activo';
+
+            $errors = validate_licencia_data($nombre, $precio, $dias);
+            if (!empty($errors)) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=' . urlencode(implode(', ', $errors)));
+                exit;
+            }
+
+            $stmt = $conn->prepare("INSERT INTO licencias (nombre, precio, dias, estado) VALUES (?, ?, ?, ?)");
+            $stmt->bind_param("sdis", $nombre, $precio, $dias, $estado);
+
+            if ($stmt->execute()) {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?success=created');
+            } else {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?error=db_error');
+            }
+            break;
+
+        case 'editar':
+            $id = intval($_POST['id']);
+            $nombre = sanitize_input($_POST['nombre']);
+            $precio = floatval($_POST['precio']);
+            $dias = intval($_POST['dias']);
+            $estado = in_array($_POST['estado'] ?? 'activo', ['activo', 'inactivo']) ? $_POST['estado'] : 'activo';
+
+            if ($id <= 0) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=invalid_id');
+                exit;
+            }
+
+            $errors = validate_licencia_data($nombre, $precio, $dias);
+            if (!empty($errors)) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=' . urlencode(implode(', ', $errors)));
+                exit;
+            }
+
+            $stmt = $conn->prepare("UPDATE licencias SET nombre = ?, precio = ?, dias = ?, estado = ? WHERE id = ?");
+            $stmt->bind_param("sdisi", $nombre, $precio, $dias, $estado, $id);
+
+            if ($stmt->execute()) {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?success=updated');
+            } else {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?error=db_error');
+            }
+            break;
+
+        case 'eliminar':
+            $id = intval($_POST['id']);
+
+            if ($id <= 0) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=invalid_id');
+                exit;
+            }
+
+            // Verificar si hay gimnasios usando esta licencia
+            $stmt = $conn->prepare("SELECT COUNT(*) as count FROM gimnasios WHERE licencia_id = ?");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $result = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if ($result['count'] > 0) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=in_use&count=' . $result['count']);
+                exit;
+            }
+
+            // Eliminar licencia
+            $stmt = $conn->prepare("DELETE FROM licencias WHERE id = ?");
+            $stmt->bind_param("i", $id);
+
+            if ($stmt->execute() && $stmt->affected_rows > 0) {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?success=deleted');
+            } else {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?error=not_found');
+            }
+            break;
+
+        case 'toggle_estado':
+            $id = intval($_POST['id']);
+
+            if ($id <= 0) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=invalid_id');
+                exit;
+            }
+
+            // Obtener estado actual
+            $stmt = $conn->prepare("SELECT estado FROM licencias WHERE id = ?");
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $result = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$result) {
+                header('Location: /gym_saas/superadmin/licencias.php?error=not_found');
+                exit;
+            }
+
+            // Cambiar estado
+            $nuevo_estado = ($result['estado'] === 'activo') ? 'inactivo' : 'activo';
+            $stmt = $conn->prepare("UPDATE licencias SET estado = ? WHERE id = ?");
+            $stmt->bind_param("si", $nuevo_estado, $id);
+
+            if ($stmt->execute()) {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?success=status_changed');
+            } else {
+                $stmt->close();
+                header('Location: /gym_saas/superadmin/licencias.php?error=db_error');
+            }
+            break;
+
+        default:
+            header('Location: /gym_saas/superadmin/licencias.php?error=invalid_action');
+            break;
+    }
+} elseif ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action'])) {
+    // Acciones GET (solo para eliminar con confirmación)
+    $action = $_GET['action'];
+    
+    if ($action === 'eliminar' && isset($_GET['id'])) {
+        $id = intval($_GET['id']);
+        
+        if ($id <= 0) {
+            header('Location: /gym_saas/superadmin/licencias.php?error=invalid_id');
+            exit;
+        }
+
+        // Verificar si hay gimnasios usando esta licencia
+        $stmt = $conn->prepare("SELECT COUNT(*) as count FROM gimnasios WHERE licencia_id = ?");
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if ($result['count'] > 0) {
+            header('Location: /gym_saas/superadmin/licencias.php?error=in_use&count=' . $result['count']);
+            exit;
+        }
+
+        // Eliminar licencia
+        $stmt = $conn->prepare("DELETE FROM licencias WHERE id = ?");
+        $stmt->bind_param("i", $id);
+
+        if ($stmt->execute() && $stmt->affected_rows > 0) {
+            $stmt->close();
+            header('Location: /gym_saas/superadmin/licencias.php?success=deleted');
+        } else {
+            $stmt->close();
+            header('Location: /gym_saas/superadmin/licencias.php?error=not_found');
+        }
+    } else {
+        header('Location: /gym_saas/superadmin/licencias.php');
+    }
+} else {
+    header('Location: /gym_saas/superadmin/licencias.php');
+}
+
+$conn->close();
+exit;
 ?>
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <title>Editar Gimnasio</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
-</head>
-<body>
-<?php include("sidebar.php"); ?>
-<div class="container mt-5">
-    <h2><i class="fas fa-dumbbell me-2 text-primary"></i>Editar Gimnasio</h2>
-
-    <?php if($success): ?>
-        <div class="alert alert-success alert-dismissible fade show" role="alert">
-            <?= htmlspecialchars($success) ?>
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button>
-        </div>
-    <?php endif; ?>
-
-    <form method="POST">
-        <div class="mb-3">
-            <label>Nombre</label>
-            <input type="text" name="nombre" class="form-control" value="<?= htmlspecialchars($gym['nombre']) ?>" required>
-        </div>
-        <div class="mb-3">
-            <label>Dirección</label>
-            <input type="text" name="direccion" class="form-control" value="<?= htmlspecialchars($gym['direccion']) ?>">
-        </div>
-        <div class="mb-3">
-            <label>Altura</label>
-            <input type="text" name="altura" class="form-control" value="<?= htmlspecialchars($gym['altura']) ?>">
-        </div>
-        <div class="mb-3">
-            <label>Localidad</label>
-            <input type="text" name="localidad" class="form-control" value="<?= htmlspecialchars($gym['localidad']) ?>">
-        </div>
-        <div class="mb-3">
-            <label>Partido</label>
-            <input type="text" name="partido" class="form-control" value="<?= htmlspecialchars($gym['partido']) ?>">
-        </div>
-        <div class="mb-3">
-            <label>Email</label>
-            <input type="email" name="email" class="form-control" value="<?= htmlspecialchars($gym['email']) ?>" required>
-        </div>
-        <div class="mb-3">
-            <label>Estado</label>
-            <select class="form-control" name="estado">
-                <option value="activo" <?= $gym['estado']=='activo'?'selected':'' ?>>Activo</option>
-                <option value="suspendido" <?= $gym['estado']=='suspendido'?'selected':'' ?>>Suspendido</option>
-            </select>
-        </div>
-        <button class="btn btn-success"><i class="fas fa-save me-1"></i> Guardar Cambios</button>
-        <a href="gimnasios.php" class="btn btn-secondary"><i class="fas fa-arrow-left me-1"></i> Volver</a>
-    </form>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
