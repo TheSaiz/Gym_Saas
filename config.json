@@ -1,0 +1,12 @@
+{
+    "site_name": "Barbería",
+    "logo": "",
+    "email_cierre": "thomec86@gmail.com",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_secure": "tls",
+    "smtp_user": "thomec86@gmail.com",
+    "smtp_password": "wfch xpet ipvg tlbf",
+    "smtp_from_email": "thomec86l@gmail.com",
+    "smtp_from_name": "Sistema Barbería"
+}
